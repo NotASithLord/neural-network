@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Neural Network</title>
+<style>body{margin:0;background:#101110;color:#f2f0e9;font-family:monospace}main{max-width:1000px;margin:4vw auto;padding:24px}h1{font-size:24px;font-weight:400}button,select{font:inherit;background:transparent;color:inherit;border:1px solid #f2f0e960;padding:12px;cursor:pointer}button:hover{border-color:#e61c1b}canvas{width:100%;display:block;border:1px solid #f2f0e930;margin:20px 0}output{display:block;margin:15px 0;color:#a6a69d}a{color:inherit}</style>
+<main><h1>NEURAL NETWORK</h1><button id="run">Run simulation</button><canvas id="canvas" width="900" height="540"></canvas><output id="status">SWIFT / WASM</output><a href="https://github.com/NotASithLord/neural-network">Made with Swift / GitHub ↗</a></main>
+<script>globalThis.NEURAL_WASM_URL='./core.wasm';</script><script src="Browser/view.js"></script><script src="Browser/neural-gpu.js"></script><script src="Browser/swift-core.js"></script>
+<script>
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d'),run=document.querySelector('#run'),status=document.querySelector('#status');let engine,active=false,frame=0,last=0,loading=false;
+function tick(t){if(!active||document.hidden)return;const dt=last?Math.min(.033,(t-last)/1000):.016;last=t;status.textContent=engine.draw(ctx,dt,2);frame=requestAnimationFrame(tick);}
+canvas.style.touchAction='pan-y';canvas.style.cursor='default';let drag=null;
+const orbit=()=>engine?(engine.orbit??=new NeuralView.Orbit()):null;
+const redraw=()=>{if(engine&&!active)engine.draw(ctx,0,2);};
+canvas.onpointerdown=e=>{if(!orbit())return;drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};
+canvas.onpointermove=e=>{if(!drag)return;const v=orbit();v.yaw+=(e.clientX-drag[0])*.008;v.pitch=Math.max(-1.4,Math.min(1.4,v.pitch+(e.clientY-drag[1])*.008));drag=[e.clientX,e.clientY];redraw();};
+canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
+canvas.addEventListener('wheel',e=>{const v=orbit();if(!v)return;e.preventDefault();v.zoom=Math.max(.45,Math.min(2,v.zoom*Math.exp(-e.deltaY*.001)));redraw();},{passive:false});
+canvas.ondblclick=()=>{orbit()?.reset();redraw();};
+run.onclick=async()=>{if(loading)return;if(active){active=false;cancelAnimationFrame(frame);run.textContent='Resume simulation';return;}loading=true;run.disabled=true;try{if(!engine){try{engine=await NeuralGPU.create();}catch{engine=await new SwiftCore.CPU().init();}}canvas.style.touchAction='none';canvas.style.cursor='grab';active=true;last=0;run.textContent='Pause simulation';frame=requestAnimationFrame(tick);}catch(e){status.textContent=e.message;}finally{loading=false;run.disabled=false;}};
+document.addEventListener('visibilitychange',()=>{cancelAnimationFrame(frame);if(active&&!document.hidden){last=0;frame=requestAnimationFrame(tick);}});window.addEventListener('pagehide',()=>engine?.destroy?.());
+</script></html>

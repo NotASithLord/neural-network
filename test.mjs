@@ -1,0 +1,16 @@
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const bytes=readFileSync(new URL('core.wasm',import.meta.url));
+let memory;
+const {instance}=await WebAssembly.instantiate(bytes,{wasi_snapshot_preview1:{random_get:(p,n)=>{if(!memory)return 52;crypto.getRandomValues(new Uint8Array(memory.buffer,p,n));return 0;}}});
+const c=instance.exports;memory=c.memory;
+c.neural_init(64);c.neural_evaluate();const loss=c.neural_loss();
+const offsets=[0,192,4352,8512,12672,16832],initialWeights=new Float32Array(memory.buffer,c.neural_weights(),16897).slice();
+for(let i=0;i<32;i++)c.neural_step(500);
+c.neural_evaluate();assert(c.neural_loss()<loss*0.7,'Neural loss must decrease');assert(c.neural_accuracy()>.85,'Neural validation accuracy must exceed 85%');
+const trainedWeights=new Float32Array(memory.buffer,c.neural_weights(),16897);
+for(let layer=0;layer<6;layer++)assert(trainedWeights.subarray(offsets[layer],offsets[layer+1]||16897).some((v,i)=>v!==initialWeights[offsets[layer]+i]),'Every layer must learn');
+console.log('CPU neural:',loss,'→',c.neural_loss(),'/ accuracy',c.neural_accuracy());
+c.neural_init(256);assert(new Float32Array(memory.buffer,c.neural_weights(),264193).every(Number.isFinite));
+assert.equal(c.neural_adapt(1,1,2),2);assert.equal(c.neural_adapt(100,1,2),1);
+console.log('GPU initialization and adaptive budget: passed');
