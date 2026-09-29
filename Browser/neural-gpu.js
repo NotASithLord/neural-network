@@ -1,4 +1,13 @@
 (() => {
+function gpuWork(current, elapsed, frameMS, timestamp, maximum) {
+ if(!Number.isFinite(elapsed)||elapsed<=0)return current;
+ const target=timestamp?frameMS*.875:Math.min(8,frameMS*.5);
+ const ratio=elapsed/target;
+ if(ratio>=.9714&&ratio<=1.0286)return current;
+ const next=current*Math.max(.5,Math.min(1.25,1/ratio));
+ return Math.max(1,Math.min(maximum,ratio<1?Math.ceil(next):Math.floor(next)));
+}
+
 const code=`
 struct Config { width:u32, seed:u32, pad0:u32, pad1:u32 }
 @group(0) @binding(0) var<uniform> p:Config;
@@ -22,7 +31,7 @@ ${Array.from({length:6},(_,l)=>`@compute @workgroup_size(64) fn f${l}(@builtin(g
 `;
 class NeuralGPU {
  static async create(){if(!navigator.gpu)throw Error('WebGPU is unavailable');const a=await navigator.gpu.requestAdapter({powerPreference:'high-performance'});if(!a)throw Error('No WebGPU adapter');const timestamp=a.features.has('timestamp-query');const d=await a.requestDevice({requiredFeatures:timestamp?['timestamp-query']:[]});const n=new NeuralGPU(d,timestamp);try{await n.init();return n;}catch(e){d.destroy();throw e;}}
- constructor(device,timestamp){Object.assign(this,{device,timestamp,width:256,count:1280,iterations:1,steps:0,busy:false,disposed:false,field:null,loss:0,accuracy:0,lastEval:0,sampleSerial:0,gpuMS:0,wallMS:0});device.lost.then(()=>{if(!this.disposed)this.error='GPU connection lost';});}
+ constructor(device,timestamp){Object.assign(this,{device,timestamp,width:256,count:1280,frameMS:1000/60,iterations:1,steps:0,busy:false,disposed:false,field:null,loss:0,accuracy:0,lastEval:0,sampleSerial:0,gpuMS:0,wallMS:0});device.lost.then(()=>{if(!this.disposed)this.error='GPU connection lost';});}
  buffer(size,usage){return this.device.createBuffer({size,usage});}
  async init(){this.core=await SwiftCore.load();this.core.neural_init(this.width);const d=this.device,module=d.createShaderModule({code}),info=await module.getCompilationInfo();const errors=info.messages.filter(x=>x.type==='error');if(errors.length)throw Error(errors.map(x=>x.message).join('\n'));
  this.weightCount=3*this.width+4*this.width*(this.width+1)+this.width+1;
@@ -36,9 +45,9 @@ class NeuralGPU {
  if(evaluate){for(let l=0;l<6;l++)run('e'+l,l===5?1:this.width/64,1024);run('capture',Math.ceil(Math.max(1024,this.count)/64));}pass.end();if(evaluate)e.copyBufferToBuffer(this.output,0,this.read,0,16384);if(this.timestamp){e.resolveQuerySet(this.query,0,2,this.resolve,0);e.copyBufferToBuffer(this.resolve,0,this.timeRead,0,16);}d.queue.submit([e.finish()]);await d.queue.onSubmittedWorkDone();if(this.disposed)return;this.wallMS=performance.now()-start;this.steps+=iterations;
  if(this.timestamp){await this.timeRead.mapAsync(GPUMapMode.READ);const t=new BigUint64Array(this.timeRead.getMappedRange());this.gpuMS=Number(t[1]-t[0])/1e6;this.timeRead.unmap();}
  if(evaluate){await this.read.mapAsync(GPUMapMode.READ);this.field=new Float32Array(this.read.getMappedRange().slice(0));this.read.unmap();this.lastEval=start;if(!this.field.every(Number.isFinite))throw Error('Training became unstable');new Float32Array(this.core.memory.buffer,this.core.neural_display(),4096).set(this.field);this.core.neural_measure();this.loss=this.core.neural_loss();this.accuracy=this.core.neural_accuracy();}
- if(!evaluate)this.iterations=this.core.neural_adapt(this.timestamp?this.gpuMS:this.wallMS,iterations,intensity);this.sampleSerial++;if(this.timestamp){const at=performance.now();window.dispatchEvent(new CustomEvent('neural-gpu-sample',{detail:{mode:'neural',busy:this.gpuMS,interval:this.sampleAt?at-this.sampleAt:16.7}}));this.sampleAt=at;}this.lastSample={gpuMS:this.timestamp?this.gpuMS:null,wallMS:this.wallMS,at:performance.now()};
- }catch(e){if(!this.disposed){this.error=e.message;console.error('Neural WebGPU:',e);}}finally{this.busy=false;}}
- draw(ctx,dt,intensity){if(dt)this.train(intensity);const w=ctx.canvas.width,h=ctx.canvas.height;ctx.fillStyle='#101110';ctx.fillRect(0,0,w,h);ctx.save();const scale=Math.min(w/900,h/540);ctx.translate((w-900*scale)/2,(h-540*scale)/2);ctx.scale(scale,scale);const label=(t,x,y,size=12,color='#93958a')=>{ctx.fillStyle=color;ctx.font=size+'px monospace';ctx.fillText(t,x,y);};
+ if(!evaluate)this.iterations=gpuWork(iterations,this.timestamp?this.gpuMS:this.wallMS,Math.max(this.frameMS,Math.min(this.frameMS*2,this.cadenceMS||this.frameMS)),this.timestamp,128);this.sampleSerial++;if(this.timestamp){const at=performance.now();const gap=this.sampleAt?at-this.sampleAt:this.frameMS;if(gap>0&&gap<this.frameMS*3)this.cadenceMS=(this.cadenceMS||this.frameMS)*.8+gap*.2;window.dispatchEvent(new CustomEvent('neural-gpu-sample',{detail:{mode:'neural',busy:this.gpuMS,interval:this.sampleAt?at-this.sampleAt:16.7}}));this.sampleAt=at;}this.lastSample={gpuMS:this.timestamp?this.gpuMS:null,wallMS:this.wallMS,at:performance.now()};
+ }catch(e){if(!this.disposed){this.error=e.message;console.error('Neural WebGPU:',e);}}finally{this.busy=false;if(!this.disposed&&!this.error&&!document.hidden&&performance.now()<this.activeUntil){clearTimeout(this.nextWork);this.nextWork=setTimeout(()=>{if(performance.now()<this.activeUntil&&!document.hidden)this.train(intensity);},Math.max(0,start+this.frameMS-performance.now()));}}}
+ draw(ctx,dt,intensity){this.activeUntil=dt?performance.now()+100:0;if(dt){if(dt>=.004&&dt<.025)this.frameMS=Math.min(this.frameMS,dt*1000);this.train(intensity);}const w=ctx.canvas.width,h=ctx.canvas.height;ctx.fillStyle='#101110';ctx.fillRect(0,0,w,h);ctx.save();const scale=Math.min(w/900,h/540);ctx.translate((w-900*scale)/2,(h-540*scale)/2);ctx.scale(scale,scale);const label=(t,x,y,size=12,color='#93958a')=>{ctx.fillStyle=color;ctx.font=size+'px monospace';ctx.fillText(t,x,y);};
  this.orbit??=new NeuralView.Orbit();const width=this.width||256,cols=Math.ceil(Math.sqrt(width)),project=(x,y,z)=>this.orbit.project(x,y,z,292,265);
  const layers=Array.from({length:7},(_,l)=>Array.from({length:l===0?2:l===6?1:width},(_,i)=>({...project((l-3)*73,l===0?(i-.5)*50:l===6?0:(i%cols-(cols-1)/2)*9,l===0||l===6?0:(Math.floor(i/cols)-(Math.ceil(width/cols)-1)/2)*9),l,i})));
  ctx.lineWidth=.55;ctx.strokeStyle='#f2f0e917';ctx.beginPath();
